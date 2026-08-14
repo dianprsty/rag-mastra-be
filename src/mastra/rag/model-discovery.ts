@@ -18,7 +18,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour cache
 export function getFallbackModels(): ModelDiscoveryResponse {
   return {
     chatModels: [
-      { id: "openrouter/inclusionai/ling-3.0-flash:free", name: "Ling 3.0 Flash (Free)", provider: "OpenRouter", isFree: true },
+      { id: "openrouter/openrouter/free", name: "Free Models Router (Auto)", provider: "OpenRouter", isFree: true },
       { id: "openrouter/openai/gpt-4o-mini", name: "GPT-4o Mini", provider: "OpenAI" },
       { id: "openrouter/openai/gpt-4o", name: "GPT-4o", provider: "OpenAI" },
       { id: "openrouter/anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet", provider: "Anthropic" },

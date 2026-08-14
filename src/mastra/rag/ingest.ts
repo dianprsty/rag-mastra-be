@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ModelRouterEmbeddingModel } from '@mastra/core/llm';
 import { MDocument } from '@mastra/rag';
 import { embedMany } from 'ai';
@@ -6,6 +8,33 @@ import { PDFParse } from 'pdf-parse';
 
 import { DEFAULT_EMBEDDING_MODEL, EMBEDDING_DIMENSION } from './config.js';
 import { vectorStore, RAG_INDEX_NAME } from '../vector-store-factory.js';
+
+const DB_DIR = path.resolve(process.cwd(), '.mastra');
+const DB_FILE = path.join(DB_DIR, 'ingested_docs.json');
+
+function ensureDbFile(): IngestedDocInfo[] {
+  if (!fs.existsSync(DB_DIR)) {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(DB_FILE)) {
+    const defaultSeed: IngestedDocInfo[] = [];
+    fs.writeFileSync(DB_FILE, JSON.stringify(defaultSeed, null, 2), 'utf-8');
+    return defaultSeed;
+  }
+  try {
+    const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    return JSON.parse(raw) as IngestedDocInfo[];
+  } catch {
+    return [];
+  }
+}
+
+function saveDb(docs: IngestedDocInfo[]) {
+  if (!fs.existsSync(DB_DIR)) {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+  }
+  fs.writeFileSync(DB_FILE, JSON.stringify(docs, null, 2), 'utf-8');
+}
 
 function generateVectorId(source: string, chunkIndex: number): string {
   return createHash('sha256').update(`${source}:${chunkIndex}`).digest('hex');
@@ -36,43 +65,23 @@ export interface IngestedDocInfo {
   summarySnippet?: string;
 }
 
-const ingestedDocsRegistry: IngestedDocInfo[] = [
-  {
-    id: 'spiceuptheworld.pdf',
-    title: 'Spice Up The World PDF Guide',
-    source: 'spiceuptheworld.pdf',
-    format: 'pdf',
-    chunksCount: 20,
-    ingestedAt: new Date().toISOString(),
-    summarySnippet: 'Detailed spice blend guide, recipes, background history, and culinary pairings.',
-  },
-  {
-    id: 'knowledge/mastra-rag.md',
-    title: 'Mastra RAG Framework Guide',
-    source: 'knowledge/mastra-rag.md',
-    format: 'markdown',
-    chunksCount: 3,
-    ingestedAt: new Date().toISOString(),
-    summarySnippet: 'Overview of Mastra RAG framework, vector store setup, chunking strategies, and query pipelines.',
-  },
-];
-
 export function getIngestedDocumentsList(): IngestedDocInfo[] {
-  return ingestedDocsRegistry;
+  return ensureDbFile();
 }
 
 export interface IngestDocumentParams {
   text: string;
   source: string;
   title?: string;
-  format?: 'markdown' | 'text' | 'pdf';
+  format?: 'markdown' | 'text' | 'pdf' | 'url';
   embeddingModel?: string;
   pdfBase64?: string;
+  url?: string;
 }
 
 
 export async function ingestDocument(params: IngestDocumentParams) {
-  const { text, source, title = source, format = 'text', pdfBase64 } = params;
+  const { text, source, title = source, format = 'text', pdfBase64, url } = params;
   const embeddingModel = DEFAULT_EMBEDDING_MODEL;
 
 
@@ -80,8 +89,28 @@ export async function ingestDocument(params: IngestDocumentParams) {
 
   let contentToChunk = text;
 
+  // Handle URL scraping
+  if (format === 'url' && url) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const html = await response.text();
+      // Clean HTML
+      contentToChunk = html
+        .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '')
+        .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<\/?[^>]+(>|$)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    } catch (err: any) {
+      throw new Error(`Failed to scrape URL "${url}": ${err.message}`);
+    }
+  }
   // Handle PDF parsing if PDF format or base64 payload is provided
-  if (format === 'pdf' || pdfBase64) {
+  else if (format === 'pdf' || pdfBase64) {
     try {
       const base64Data = pdfBase64 || (text.includes('base64,') ? text.split('base64,')[1] : text);
       const data = new Uint8Array(Buffer.from(base64Data, 'base64'));
@@ -149,12 +178,14 @@ export async function ingestDocument(params: IngestDocumentParams) {
   };
 
   // Prevent duplicate registry items
-  const existingIdx = ingestedDocsRegistry.findIndex((d) => d.id === source || d.source === source);
+  const registry = ensureDbFile();
+  const existingIdx = registry.findIndex((d) => d.id === source || d.source === source);
   if (existingIdx >= 0) {
-    ingestedDocsRegistry[existingIdx] = newDocInfo;
+    registry[existingIdx] = newDocInfo;
   } else {
-    ingestedDocsRegistry.unshift(newDocInfo);
+    registry.unshift(newDocInfo);
   }
+  saveDb(registry);
 
   return {
     success: true,
@@ -164,4 +195,38 @@ export async function ingestDocument(params: IngestDocumentParams) {
     embeddingModel,
   };
 
+}
+
+export async function deleteIngestedDocument(documentId: string): Promise<boolean> {
+  const registry = ensureDbFile();
+  const doc = registry.find((d) => d.id === documentId || d.source === documentId);
+  if (!doc) {
+    return false;
+  }
+
+  // Deleting vectors from vectorStore using calculated deterministic vector IDs
+  const idsToDelete = Array.from({ length: doc.chunksCount }, (_, i) =>
+    generateVectorId(doc.source, i)
+  );
+
+  try {
+    await vectorStore.deleteVectors({
+      indexName: RAG_INDEX_NAME,
+      ids: idsToDelete,
+    });
+  } catch (err) {
+    console.warn('[Ingest] Failed to delete vectors from vector store, attempting metadata filter delete:', err);
+    try {
+      await vectorStore.deleteVectors({
+        indexName: RAG_INDEX_NAME,
+        filter: { source: doc.source },
+      });
+    } catch (filterErr) {
+      console.error('[Ingest] Metadata filter delete also failed:', filterErr);
+    }
+  }
+
+  const updatedRegistry = registry.filter((d) => d.id !== documentId && d.source !== documentId);
+  saveDb(updatedRegistry);
+  return true;
 }

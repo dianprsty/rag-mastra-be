@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getLiveModels } from '../mastra/rag/model-discovery.js';
-import { ingestDocument, getIngestedDocumentsList } from '../mastra/rag/ingest.js';
+import { ingestDocument, getIngestedDocumentsList, deleteIngestedDocument } from '../mastra/rag/ingest.js';
 import { ragAgent } from '../mastra/agents/rag-agent.js';
 import { vectorStore, RAG_INDEX_NAME } from '../mastra/vector-store-factory.js';
 import {
@@ -73,20 +73,21 @@ export function createRAGRouter(): Router {
   // 3. Ingest Document
   router.post('/ingest', async (req: Request, res: Response) => {
     try {
-      const { text, source, title, format, embeddingModel, pdfBase64 } = req.body;
+      const { text, source, title, format, embeddingModel, pdfBase64, url } = req.body;
 
-      if (!text && !pdfBase64) {
-        res.status(400).json({ error: 'Either "text" or "pdfBase64" is required.' });
+      if (!text && !pdfBase64 && !url) {
+        res.status(400).json({ error: 'Either "text", "pdfBase64", or "url" is required.' });
         return;
       }
 
       const result = await ingestDocument({
         text: text || '',
-        source: source || title || 'document.pdf',
-        title: title || source || 'Document',
+        source: source || title || url || 'document.pdf',
+        title: title || source || url || 'Document',
         format: format || 'text',
         embeddingModel,
         pdfBase64,
+        url,
       });
 
       res.json(result);
@@ -173,6 +174,21 @@ export function createRAGRouter(): Router {
       res.json({ documents: docs });
     } catch (error: any) {
       res.status(500).json({ error: error.message || 'Failed to fetch ingested documents list' });
+    }
+  });
+
+  // 6. Delete Ingested Document
+  router.delete('/documents/:documentId', async (req: Request, res: Response) => {
+    try {
+      const documentId = String(req.params.documentId);
+      const success = await deleteIngestedDocument(documentId);
+      if (!success) {
+        res.status(404).json({ error: 'Document not found in registry' });
+        return;
+      }
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to delete document' });
     }
   });
 

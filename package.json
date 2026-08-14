@@ -6,10 +6,9 @@
   "engines": {
     "node": ">=22.0.0"
   },
-
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "studio": "mastra dev --port 4111",
+    "studio": "mastra dev",
     "build": "mastra build && tsc",
     "start": "node dist/index.js"
   },

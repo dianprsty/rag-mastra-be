@@ -4,6 +4,7 @@ import { embed } from 'ai';
 import { z } from 'zod';
 
 import { DEFAULT_EMBEDDING_MODEL } from '../rag/config.js';
+import { ensureVectorIndex } from '../rag/ingest.js';
 import { vectorStore, RAG_INDEX_NAME } from '../vector-store-factory.js';
 
 export const searchKnowledgeBaseTool = createTool({
@@ -35,12 +36,18 @@ export const searchKnowledgeBaseTool = createTool({
       model: modelRouter,
     });
 
+    await ensureVectorIndex();
 
-    const results = await vectorStore.query({
-      indexName: RAG_INDEX_NAME,
-      queryVector: embedding,
-      topK,
-    });
+    let results: Awaited<ReturnType<typeof vectorStore.query>> = [];
+    try {
+      results = await vectorStore.query({
+        indexName: RAG_INDEX_NAME,
+        queryVector: embedding,
+        topK,
+      });
+    } catch (queryErr) {
+      console.warn('[searchKnowledgeBaseTool] Query error (likely empty/non-existent index):', queryErr);
+    }
 
     const citations = results.map((result, index) => {
       const metadata = result.metadata || {};
